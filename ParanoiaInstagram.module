@@ -1,0 +1,150 @@
+<?php namespace Paranoia;
+
+/**
+ * ProcessWire 'Instagram' module
+ *
+ * Pulls images from instagram
+ * 
+ * ProcessWire 2.x 
+ * Copyright (C) 2010 by Ryan Cramer 
+ * Licensed under GNU/GPL v2, see LICENSE.TXT
+ * 
+ * http://www.processwire.com
+ * http://www.ryancramer.com
+ * 1196645505.09f053d.35f5ba6c125f453fa0bfae3cdf18f244
+ */
+
+class ParanoiaInstagram extends \ProcessWire\WireData implements \ProcessWire\Module {
+
+	const access_token = "XXX";
+	const client_id = "XXX";
+	const user_id = "XXX";
+
+
+	public static function getModuleInfo() {
+
+		return array(
+			'title' => 'Instagram für ParaPub Pages', 
+			'version' => 001, 
+			'summary' => 'Pulls images from instagram',
+			'href' => 'http://bigair.tv',
+			'singular' => true,		
+			'autoload' => true, 
+		);
+	}
+
+	public function init() {
+		#$this->loadImages();
+		$this->fuel->set("instagram", $this);
+	}
+	
+	public function install() {}
+	public function uninstall() {}
+
+	public function expireCache() {
+		$path = wire('config')->paths->cache;
+		$cache = wire('modules')->get('MarkupCache');
+		if($objects = new \DirectoryIterator($path."MarkupCache/")) { 
+			foreach($objects as $obj) {
+				if(preg_match("/^instagram/",$obj->getFilename())) {
+					$cache->get($obj->getFilename(),0);
+					#$this->remove($path."MarkupCache/".$obj->getFilename()."/");
+				}
+			}
+		}
+		
+	}
+	private function loadImages() {
+		$cache = $this->modules->get('MarkupCache');
+		$searchString = "https://api.instagram.com/v1/users/".self::user_id."/media/recent?client_id=".self::client_id."&access_token=".self::access_token."&count=".$this->limit."&max_id=".$this->max_id;
+		if(!$out = $cache->get('instagramCache'.$this->limit.$this->max_id,360)) {
+			$out = file_get_contents($searchString);
+			$cache->save($out);
+		}
+		error_log($searchString);
+		$this->images = json_decode($out);
+		$this->count = count($this->images->data);
+	}
+
+	public function setLimit($limit=10) {
+		$this->limit=$limit;
+	}
+	public function setMaxId($id=null) {
+		$this->max_id=$id;
+	}
+
+	public function getImages() {
+		$this->loadImages();
+		return $this->images->data;
+	}
+
+	public function getPagination() {
+		return $this->images->pagination;
+	}
+	public function getRaw() {
+		return $this->images;
+	}
+
+
+	public function getImageCount() {
+		return $this->count;
+	}
+
+	public function getImage($id) {
+		$cache = wire('modules')->get('MarkupCache');
+		$searchString = "https://api.instagram.com/v1/media/".$id."?access_token=".self::access_token;
+		$commentString = "https://api.instagram.com/v1/media/".$id."/comments?access_token=".self::access_token;
+		
+
+		if(!$out = $cache->get('instagramImageCache'.$id,3600)) {
+			$imageJson = file_get_contents($searchString);
+			$commentJson = file_get_contents($commentString);
+			$out = json_decode($imageJson);
+			#$out->data->comments->data = new \StdClass;
+			$comments = json_decode($commentJson);
+
+			$out->data->comments->data = $comments->data;
+			$out = json_encode($out);
+			$cache->save($out);
+		}
+		$image = json_decode($out);
+		return $image->data;
+		/*$image_array = (array) $this->images->data;
+		foreach($image_array as $key=>$img) {
+			if($img->id == $id) {
+				$prev = ($key>0)?$image_array[$key-1]->id:'';
+				$next = ($key<$this->count-1)?$image_array[$key+1]->id:'';
+				$img->prev = $prev;
+				$img->next = $next;
+				return $img;
+			}
+		}
+		*/
+	}
+
+
+	public function insta_update($images) {
+		$i = array();
+		foreach($images->data as $img) {
+			$i[$img->id] = 1;
+			$image = wire('pages')->get("name=".$img->id);
+			if($image->id && $image->like_count<>$img->likes->count) {
+				$image->like_count=$img->likes->count;
+				$image->save('like_count');
+				$this->log->save('Updating '.$img->id);
+			}
+		}
+		$count=wire('pages')->find("template=instagram")->count();
+		if($count <> count($images->data)) {
+			foreach(wire('pages')->find("template=instagram") as $img) {
+				if(!isset($i[$img->name])) {
+					$img->addStatus(Page::statusUnpublished);
+					$img->save();
+					$this->log->save('Gelöscht: '.$img->name);
+				}
+			}
+			$this->log->save('Ungerade');
+		}
+	}
+	
+}
